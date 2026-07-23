@@ -34,8 +34,9 @@ signal. VMs show disk as `n/a` (see [notes](#notes)).
 
 ## Requirements
 
-- A Proxmox VE node (has `pvesh` and `python3`).
-- Nothing else.
+- **Local mode (default):** a Proxmox VE node (it has `pvesh` and `python3`).
+- **Remote mode:** any machine with `python3` — it reads a remote PVE over the API.
+- Nothing else — no `pip install`, ever.
 
 ## Quick start (no install)
 
@@ -73,6 +74,9 @@ All optional, via environment variables (set them in `pve-glance.service` and
 | `PVE_GLANCE_CACHE` | `3` | Seconds to cache `pvesh` output across viewers |
 | `PVE_GLANCE_PVESH` | `pvesh` | Path to the `pvesh` binary |
 | `PVE_GLANCE_VERBOSE` | *(off)* | Log every request |
+| `PVE_GLANCE_API_URL` | *(none)* | Read a **remote** PVE over HTTP, e.g. `https://192.168.1.30:8006`. When set, uses the API instead of local `pvesh`. |
+| `PVE_GLANCE_API_TOKEN` | *(none)* | API token for remote mode: `USER@REALM!TOKENID=SECRET` |
+| `PVE_GLANCE_API_VERIFY` | *(off)* | Verify the TLS cert (leave off for PVE's self-signed cert) |
 
 ### Theming
 
@@ -81,6 +85,34 @@ buttons in the header and the choice is remembered per browser (localStorage). E
 block of CSS variables near the top of the embedded stylesheet in `pve-glance.py`; copy a
 block, give it a new `data-theme` name, and add a matching button to make your own. No
 external fonts or assets are loaded in any theme.
+
+## Remote mode (run it off the node)
+
+By default pve-glance reads the node it runs on. To watch a PVE host from a *different*
+machine — a mini-PC, a NAS, a container elsewhere — point it at the PVE API with a
+read-only token. The box it runs on doesn't need to be a Proxmox node at all.
+
+1. On the PVE host, create a read-only user and token:
+
+   ```bash
+   pveum user add monitor@pve
+   pveum acl modify / --user monitor@pve --role PVEAuditor
+   pveum user token add monitor@pve glance --privsep 0
+   ```
+
+   The last command prints the token secret **once** — copy it.
+
+2. Run pve-glance anywhere:
+
+   ```bash
+   PVE_GLANCE_API_URL=https://<pve-ip>:8006 \
+   PVE_GLANCE_API_TOKEN='monitor@pve!glance=<secret>' \
+   python3 pve-glance.py
+   ```
+
+`PVEAuditor` is Proxmox's built-in **read-only** role, so the token can look but never
+touch. TLS verification is off by default (PVE ships a self-signed cert); set
+`PVE_GLANCE_API_VERIFY=1` if your node has a real certificate.
 
 ## Security
 
@@ -91,17 +123,21 @@ without an API token). Two things to know:
   else, set `PVE_GLANCE_AUTH=user:pass` for basic auth, and/or bind to localhost
   (`PVE_GLANCE_BIND=127.0.0.1`) and put it behind a reverse proxy with TLS.
 - **Do not expose port 8008 to the internet.** It's a status panel for your LAN.
+- **Remote mode:** use a `PVEAuditor` (read-only) token, and keep the token out of shell
+  history — put it in the systemd unit file (readable only by root), not on the CLI.
 
 ## How it works
 
 ```
-browser ──/──────────▶ pve-glance.py ──pvesh get /cluster/resources──▶ Proxmox
-        ──/api/resources─▶  (stdlib http.server)   (cached a few seconds)
+browser ──/──────────▶ pve-glance.py ──▶ local:  pvesh get /cluster/resources
+        ──/api/resources─▶  (stdlib http.server)  remote: GET /api2/json/cluster/resources
+                                                          (cached a few seconds)
 ```
 
-The page polls `/api/resources` every 10 seconds; the server shells out to `pvesh`,
-reshapes the result into `{nodes, guests}`, and caches it briefly so many open tabs
-don't multiply the work.
+The page polls `/api/resources` every 10 seconds. In **local mode** the server shells out
+to `pvesh`; in **remote mode** it fetches the same `/cluster/resources` endpoint over HTTP
+with your token. Either way it reshapes the result into `{nodes, guests}` and caches it
+briefly so many open tabs don't multiply the work.
 
 ## Notes
 

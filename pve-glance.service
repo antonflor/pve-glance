@@ -9,11 +9,14 @@ Type=simple
 ExecStart=/usr/bin/env python3 /opt/pve-glance/pve-glance.py
 Restart=on-failure
 RestartSec=5
-# Runs as root so `pvesh` can read cluster resources without an API token.
+# Local mode (default) runs as root so `pvesh` can read cluster resources with no token.
 # Optional configuration — uncomment and edit as needed:
 #Environment=PVE_GLANCE_PORT=8008
 #Environment=PVE_GLANCE_BIND=0.0.0.0
 #Environment=PVE_GLANCE_AUTH=admin:changeme
+# Remote mode — read a DIFFERENT PVE over the HTTP API (this box need not be a PVE node):
+#Environment=PVE_GLANCE_API_URL=https://192.168.1.30:8006
+#Environment=PVE_GLANCE_API_TOKEN=monitor@pve!glance=xxxxxxxx-xxxx-xxxx-xxxx-xxxxxxxxxxxx
 
 [Install]
 WantedBy=multi-user.target

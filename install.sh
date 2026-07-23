@@ -10,13 +10,14 @@ if [ "$(id -u)" -ne 0 ]; then
   echo "error: run as root (needed to install the systemd unit)." >&2
   exit 1
 fi
-if ! command -v pvesh >/dev/null 2>&1; then
-  echo "error: 'pvesh' not found — this does not look like a Proxmox VE node." >&2
-  exit 1
-fi
 if ! command -v python3 >/dev/null 2>&1; then
   echo "error: python3 not found." >&2
   exit 1
+fi
+if ! command -v pvesh >/dev/null 2>&1; then
+  echo "note: 'pvesh' not found — this is not a Proxmox VE node." >&2
+  echo "      Local mode won't work here; configure remote mode in $UNIT" >&2
+  echo "      (PVE_GLANCE_API_URL + PVE_GLANCE_API_TOKEN). See the README." >&2
 fi
 
 mkdir -p "$DEST"

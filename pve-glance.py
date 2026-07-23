@@ -9,24 +9,33 @@ root permissions of the node it runs on.
 
     python3 pve-glance.py         # then open http://<node-ip>:8008
 
+Or run it on any machine and point it at a REMOTE PVE over the HTTP API with a
+read-only token (see PVE_GLANCE_API_URL below).
+
 Created by MONTYLABS — https://github.com/antonflor/pve-glance
 
 Configuration (all optional, via environment variables):
-    PVE_GLANCE_BIND     interface to bind      (default 0.0.0.0)
-    PVE_GLANCE_PORT     port to listen on      (default 8008)
-    PVE_GLANCE_AUTH     "user:pass" to require HTTP basic auth (default: none)
-    PVE_GLANCE_CACHE    seconds to cache pvesh output across viewers (default 3)
-    PVE_GLANCE_PVESH    path to the pvesh binary (default: pvesh on PATH)
-    PVE_GLANCE_VERBOSE  set to log every request
+    PVE_GLANCE_BIND       interface to bind      (default 0.0.0.0)
+    PVE_GLANCE_PORT       port to listen on      (default 8008)
+    PVE_GLANCE_AUTH       "user:pass" to require HTTP basic auth (default: none)
+    PVE_GLANCE_CACHE      seconds to cache output across viewers (default 3)
+    PVE_GLANCE_PVESH      path to the pvesh binary (default: pvesh on PATH)
+    PVE_GLANCE_VERBOSE    set to log every request
+  Remote mode (talk to a remote PVE instead of local pvesh):
+    PVE_GLANCE_API_URL    PVE base URL, e.g. https://192.168.1.30:8006
+    PVE_GLANCE_API_TOKEN  API token: "USER@REALM!TOKENID=SECRET" (read-only is enough)
+    PVE_GLANCE_API_VERIFY set to verify TLS (default off — PVE ships a self-signed cert)
 
 MIT licensed. No external dependencies — Python 3 standard library only.
 """
 import base64
 import json
 import os
+import ssl
 import subprocess
 import threading
 import time
+import urllib.request
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
 BIND = os.environ.get("PVE_GLANCE_BIND", "0.0.0.0")
@@ -36,19 +45,18 @@ CACHE_TTL = float(os.environ.get("PVE_GLANCE_CACHE", "3"))
 PVESH = os.environ.get("PVE_GLANCE_PVESH", "pvesh")
 VERBOSE = bool(os.environ.get("PVE_GLANCE_VERBOSE"))
 
+# Remote mode: if PVE_GLANCE_API_URL is set, talk to a remote PVE over the HTTP
+# API with a token instead of the local pvesh binary.
+API_URL = os.environ.get("PVE_GLANCE_API_URL", "").rstrip("/")
+API_TOKEN = os.environ.get("PVE_GLANCE_API_TOKEN", "")
+API_VERIFY = os.environ.get("PVE_GLANCE_API_VERIFY", "") not in ("", "0", "false", "no", "off")
+
 _cache = {"t": 0.0, "data": None}
 _lock = threading.Lock()
 
 
-def collect():
-    """Query the PVE cluster and reshape into {updated, nodes[], guests[]}."""
-    proc = subprocess.run(
-        [PVESH, "get", "/cluster/resources", "--output-format", "json"],
-        capture_output=True, text=True, timeout=25)
-    if proc.returncode != 0:
-        raise RuntimeError(proc.stderr.strip() or "pvesh exited non-zero")
-    items = json.loads(proc.stdout or "[]")
-
+def reshape(items):
+    """Turn a /cluster/resources array into {updated, nodes[], guests[]}."""
     nodes, guests = [], []
     for r in items:
         kind = r.get("type")
@@ -71,10 +79,40 @@ def collect():
                 "disk": r.get("disk", 0), "maxdisk": r.get("maxdisk", 0),
                 "uptime": r.get("uptime", 0),
             })
-
     nodes.sort(key=lambda n: n["name"])
     guests.sort(key=lambda g: (g["node"], g["status"] != "running", g["vmid"] or 0))
     return {"updated": int(time.time()), "nodes": nodes, "guests": guests}
+
+
+def collect_pvesh():
+    """Local mode: read the cluster via the pvesh CLI (runs on a PVE node)."""
+    proc = subprocess.run(
+        [PVESH, "get", "/cluster/resources", "--output-format", "json"],
+        capture_output=True, text=True, timeout=25)
+    if proc.returncode != 0:
+        raise RuntimeError(proc.stderr.strip() or "pvesh exited non-zero")
+    return reshape(json.loads(proc.stdout or "[]"))
+
+
+def collect_http():
+    """Remote mode: read a remote PVE over the HTTP API with a token."""
+    if not API_TOKEN:
+        raise RuntimeError("PVE_GLANCE_API_URL is set but PVE_GLANCE_API_TOKEN is missing")
+    token = API_TOKEN[len("PVEAPIToken="):] if API_TOKEN.startswith("PVEAPIToken=") else API_TOKEN
+    ctx = ssl.create_default_context()
+    if not API_VERIFY:                       # self-signed certs are the PVE default
+        ctx.check_hostname = False
+        ctx.verify_mode = ssl.CERT_NONE
+    req = urllib.request.Request(
+        API_URL + "/api2/json/cluster/resources",
+        headers={"Authorization": "PVEAPIToken=" + token})
+    with urllib.request.urlopen(req, timeout=25, context=ctx) as resp:
+        payload = json.loads(resp.read().decode("utf-8"))
+    return reshape(payload.get("data", []))
+
+
+def collect():
+    return collect_http() if API_URL else collect_pvesh()
 
 
 def cached_collect():
@@ -361,7 +399,7 @@ async function refresh(){
     const r = await fetch('/api/resources', {cache:'no-store'});
     doc = await r.json();
   }catch(e){ showErr('could not reach /api/resources — is pve-glance running?'); return; }
-  if(doc.error){ showErr('pvesh error: '+doc.error); return; }
+  if(doc.error){ showErr('error: '+doc.error); return; }
   document.getElementById('err').style.display = 'none';
 
   const nodes = doc.nodes || [], guests = doc.guests || [];
@@ -413,8 +451,9 @@ refresh(); setInterval(refresh, 10000);
 
 def main():
     httpd = ThreadingHTTPServer((BIND, PORT), Handler)
-    print("pve-glance serving on http://%s:%d  (auth: %s)"
-          % (BIND, PORT, "on" if AUTH else "off"), flush=True)
+    source = ("remote " + API_URL) if API_URL else "local pvesh"
+    print("pve-glance serving on http://%s:%d  (source: %s, auth: %s)"
+          % (BIND, PORT, source, "on" if AUTH else "off"), flush=True)
     try:
         httpd.serve_forever()
     except KeyboardInterrupt:
