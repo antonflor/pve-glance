@@ -6,7 +6,8 @@ live CPU, RAM, and disk meters, color-coded by load — in your browser.
 
 - **One file, no dependencies.** Pure Python 3 standard library. Proxmox already ships it.
 - **No API token, no config.** It runs on the node and uses `pvesh`, inheriting root's access.
-- **Cluster-aware.** Groups guests under each node; works fine on a single host too.
+- **One or many clusters.** Groups guests under each node; aggregate several separate PVE
+  clusters into a single page (remote mode), each polled independently and in parallel.
 - **Self-contained page.** The HTML/CSS/JS is embedded — nothing to build, no CDN calls.
 
 ```
@@ -77,6 +78,10 @@ All optional, via environment variables (set them in `pve-glance.service` and
 | `PVE_GLANCE_API_URL` | *(none)* | Read a **remote** PVE over HTTP, e.g. `https://192.168.1.30:8006`. When set, uses the API instead of local `pvesh`. |
 | `PVE_GLANCE_API_TOKEN` | *(none)* | API token for remote mode: `USER@REALM!TOKENID=SECRET` |
 | `PVE_GLANCE_API_VERIFY` | *(off)* | Verify the TLS cert (leave off for PVE's self-signed cert) |
+| `PVE_GLANCE_API_TIMEOUT` | `15` | Per-target HTTP timeout, seconds |
+| `PVE_GLANCE_TARGETS_FILE` | *(none)* | Path to a JSON file of targets — **multi-cluster** (see below) |
+| `PVE_GLANCE_TARGETS` | *(none)* | The same targets JSON inline |
+| `PVE_GLANCE_LOCAL_NAME` | *(hostname)* | Label for the local cluster in local mode |
 
 ### Theming
 
@@ -114,6 +119,29 @@ read-only token. The box it runs on doesn't need to be a Proxmox node at all.
 touch. TLS verification is off by default (PVE ships a self-signed cert); set
 `PVE_GLANCE_API_VERIFY=1` if your node has a real certificate.
 
+### Multiple clusters
+
+Point pve-glance at several PVE clusters at once — each with its own token — and it
+aggregates them into one page, grouped by cluster. Targets are polled **in parallel**, and
+an unreachable cluster shows as an error banner without breaking the others.
+
+Create a targets file (e.g. `/etc/pve-glance/targets.json`, see [`targets.example.json`](targets.example.json)):
+
+```json
+[
+  {"name":"home",       "url":"https://192.168.1.30:8006", "token":"monitor@pve!glance=...", "verify":false},
+  {"name":"friend-lab", "url":"https://10.0.0.5:8006",     "token":"monitor@pve!glance=...", "verify":false}
+]
+```
+
+Then run:
+
+```bash
+PVE_GLANCE_TARGETS_FILE=/etc/pve-glance/targets.json python3 pve-glance.py
+```
+
+![pve-glance — multiple clusters, one down](docs/multi.png)
+
 ## Security
 
 pve-glance serves **read-only** cluster metrics and runs as **root** (so `pvesh` works
@@ -136,8 +164,10 @@ browser ──/──────────▶ pve-glance.py ──▶ local: 
 
 The page polls `/api/resources` every 10 seconds. In **local mode** the server shells out
 to `pvesh`; in **remote mode** it fetches the same `/cluster/resources` endpoint over HTTP
-with your token. Either way it reshapes the result into `{nodes, guests}` and caches it
-briefly so many open tabs don't multiply the work.
+with your token. Either way it reshapes the result into `{clusters: [{nodes, guests}]}` and
+caches it briefly so many open tabs don't multiply the work. With multiple targets, every
+cluster is fetched in parallel and collected independently, so one down cluster never
+blocks or breaks the others.
 
 ## Notes
 

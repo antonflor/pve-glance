@@ -1,0 +1,14 @@
+[
+  {
+    "name": "home",
+    "url": "https://192.168.1.30:8006",
+    "token": "monitor@pve!glance=REPLACE-WITH-YOUR-TOKEN-SECRET",
+    "verify": false
+  },
+  {
+    "name": "friend-lab",
+    "url": "https://10.0.0.5:8006",
+    "token": "monitor@pve!glance=REPLACE-WITH-YOUR-TOKEN-SECRET",
+    "verify": false
+  }
+]

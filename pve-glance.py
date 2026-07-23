@@ -9,8 +9,8 @@ root permissions of the node it runs on.
 
     python3 pve-glance.py         # then open http://<node-ip>:8008
 
-Or run it on any machine and point it at a REMOTE PVE over the HTTP API with a
-read-only token (see PVE_GLANCE_API_URL below).
+Or run it on any machine and point it at one or more REMOTE PVE clusters over the
+HTTP API with read-only tokens (see PVE_GLANCE_API_URL / PVE_GLANCE_TARGETS_FILE).
 
 Created by MONTYLABS — https://github.com/antonflor/pve-glance
 
@@ -25,12 +25,18 @@ Configuration (all optional, via environment variables):
     PVE_GLANCE_API_URL    PVE base URL, e.g. https://192.168.1.30:8006
     PVE_GLANCE_API_TOKEN  API token: "USER@REALM!TOKENID=SECRET" (read-only is enough)
     PVE_GLANCE_API_VERIFY set to verify TLS (default off — PVE ships a self-signed cert)
+    PVE_GLANCE_API_TIMEOUT  per-target HTTP timeout in seconds (default 15)
+  Multiple clusters (aggregate several PVE clusters into one page):
+    PVE_GLANCE_TARGETS_FILE path to JSON: [{"name","url","token","verify"}, ...]
+    PVE_GLANCE_TARGETS      the same JSON inline (alternative to the file)
+    PVE_GLANCE_LOCAL_NAME   label for the local cluster in local mode (default: hostname)
 
 MIT licensed. No external dependencies — Python 3 standard library only.
 """
 import base64
 import json
 import os
+import socket
 import ssl
 import subprocess
 import threading
@@ -50,6 +56,15 @@ VERBOSE = bool(os.environ.get("PVE_GLANCE_VERBOSE"))
 API_URL = os.environ.get("PVE_GLANCE_API_URL", "").rstrip("/")
 API_TOKEN = os.environ.get("PVE_GLANCE_API_TOKEN", "")
 API_VERIFY = os.environ.get("PVE_GLANCE_API_VERIFY", "") not in ("", "0", "false", "no", "off")
+API_TIMEOUT = float(os.environ.get("PVE_GLANCE_API_TIMEOUT", "15"))
+
+# Multi-cluster mode: point at several PVE clusters at once. Either a JSON file
+# (PVE_GLANCE_TARGETS_FILE) or inline JSON (PVE_GLANCE_TARGETS), each a list of
+# {"name","url","token","verify"} objects. Falls back to the single API_URL above,
+# then to local pvesh.
+TARGETS_FILE = os.environ.get("PVE_GLANCE_TARGETS_FILE", "")
+TARGETS_JSON = os.environ.get("PVE_GLANCE_TARGETS", "")
+LOCAL_NAME = os.environ.get("PVE_GLANCE_LOCAL_NAME") or socket.gethostname() or "local"
 
 _cache = {"t": 0.0, "data": None}
 _lock = threading.Lock()
@@ -84,35 +99,95 @@ def reshape(items):
     return {"updated": int(time.time()), "nodes": nodes, "guests": guests}
 
 
-def collect_pvesh():
-    """Local mode: read the cluster via the pvesh CLI (runs on a PVE node)."""
+def _pvesh_items():
+    """Local mode: read /cluster/resources via the pvesh CLI (runs on a PVE node)."""
     proc = subprocess.run(
         [PVESH, "get", "/cluster/resources", "--output-format", "json"],
         capture_output=True, text=True, timeout=25)
     if proc.returncode != 0:
         raise RuntimeError(proc.stderr.strip() or "pvesh exited non-zero")
-    return reshape(json.loads(proc.stdout or "[]"))
+    return json.loads(proc.stdout or "[]")
 
 
-def collect_http():
-    """Remote mode: read a remote PVE over the HTTP API with a token."""
-    if not API_TOKEN:
-        raise RuntimeError("PVE_GLANCE_API_URL is set but PVE_GLANCE_API_TOKEN is missing")
-    token = API_TOKEN[len("PVEAPIToken="):] if API_TOKEN.startswith("PVEAPIToken=") else API_TOKEN
+def _http_items(target):
+    """Remote mode: read /cluster/resources from one PVE target over the HTTP API."""
+    token = target["token"]
+    if not token:
+        raise RuntimeError("no API token for target '%s'" % target["name"])
+    if token.startswith("PVEAPIToken="):
+        token = token[len("PVEAPIToken="):]
     ctx = ssl.create_default_context()
-    if not API_VERIFY:                       # self-signed certs are the PVE default
+    if not target["verify"]:                 # self-signed certs are the PVE default
         ctx.check_hostname = False
         ctx.verify_mode = ssl.CERT_NONE
     req = urllib.request.Request(
-        API_URL + "/api2/json/cluster/resources",
+        target["url"] + "/api2/json/cluster/resources",
         headers={"Authorization": "PVEAPIToken=" + token})
-    with urllib.request.urlopen(req, timeout=25, context=ctx) as resp:
-        payload = json.loads(resp.read().decode("utf-8"))
-    return reshape(payload.get("data", []))
+    with urllib.request.urlopen(req, timeout=API_TIMEOUT, context=ctx) as resp:
+        return json.loads(resp.read().decode("utf-8")).get("data", [])
+
+
+def _host_of(url):
+    return url.split("://", 1)[-1].split("/", 1)[0].split(":", 1)[0] or "remote"
+
+
+def targets():
+    """Resolve remote targets, or [] to mean local pvesh mode."""
+    if TARGETS_FILE:
+        with open(TARGETS_FILE) as fh:
+            data = json.load(fh)
+    elif TARGETS_JSON:
+        data = json.loads(TARGETS_JSON)
+    elif API_URL:
+        data = [{"url": API_URL, "token": API_TOKEN, "verify": API_VERIFY}]
+    else:
+        return []
+    out = []
+    for t in data:
+        url = (t.get("url") or "").rstrip("/")
+        out.append({
+            "name": t.get("name") or _host_of(url),
+            "url": url,
+            "token": t.get("token", ""),
+            "verify": bool(t.get("verify", API_VERIFY)),
+        })
+    return out
+
+
+def _cluster(name, items):
+    r = reshape(items)
+    return {"name": name, "ok": True, "nodes": r["nodes"], "guests": r["guests"]}
 
 
 def collect():
-    return collect_http() if API_URL else collect_pvesh()
+    """Aggregate one or more clusters into {updated, clusters[]}.
+
+    Each cluster is collected independently, so one unreachable target is shown as
+    an error without breaking the rest. Remote targets are fetched in parallel."""
+    tgts = targets()
+    if not tgts:                             # local pvesh — a single cluster
+        try:
+            clusters = [_cluster(LOCAL_NAME, _pvesh_items())]
+        except Exception as exc:
+            clusters = [{"name": LOCAL_NAME, "ok": False, "error": str(exc),
+                         "nodes": [], "guests": []}]
+        return {"updated": int(time.time()), "clusters": clusters}
+
+    clusters = [None] * len(tgts)
+
+    def work(i, t):
+        try:
+            clusters[i] = _cluster(t["name"], _http_items(t))
+        except Exception as exc:
+            clusters[i] = {"name": t["name"], "ok": False, "error": str(exc),
+                           "nodes": [], "guests": []}
+
+    threads = [threading.Thread(target=work, args=(i, t)) for i, t in enumerate(tgts)]
+    for th in threads:
+        th.start()
+    for th in threads:
+        th.join()
+    return {"updated": int(time.time()), "clusters": clusters}
 
 
 def cached_collect():
@@ -242,6 +317,14 @@ body{background:var(--glow),var(--bg)}
 .meta .k{color:var(--fg-mute)} .meta .on{color:var(--good)}
 
 section{margin-top:16px}
+.clusterbar{margin:38px 0 12px;padding:12px 16px;background:var(--panel);border:1px solid var(--line-2);
+  border-left:3px solid var(--accent);border-radius:8px;box-shadow:var(--shadow);
+  display:flex;justify-content:space-between;align-items:baseline;flex-wrap:wrap;gap:10px}
+.clusterbar.off{border-left-color:var(--crit)}
+.cname{font-family:var(--ff-d);font-weight:700;font-size:16px;letter-spacing:.02em}
+.cname .cstate{font-size:10px;font-weight:400;text-transform:uppercase;letter-spacing:.12em;color:var(--good);margin-left:9px}
+.clusterbar.off .cstate{color:var(--crit)}
+.csub{color:var(--fg-mute);font-size:11px}
 .hostpanel{margin:26px 0 6px;background:var(--panel);border:1px solid var(--line-2);border-radius:9px;
   padding:18px 20px;position:relative;overflow:hidden;box-shadow:var(--shadow)}
 .hostpanel::before{content:"";position:absolute;left:0;top:0;bottom:0;width:3px;background:var(--accent)}
@@ -307,7 +390,7 @@ h3 .cnt{color:var(--fg-mute);font-size:10px;letter-spacing:.06em;margin-left:aut
         <button data-set="monty">Monty</button>
       </div>
       <div class="meta">
-        <div><span class="k">NODES</span> <span id="m-nodes">—</span> · <span class="k">GUESTS</span> <span id="m-guests" class="on">— / —</span> up</div>
+        <div><span id="m-cl"></span><span class="k">NODES</span> <span id="m-nodes">—</span> · <span class="k">GUESTS</span> <span id="m-guests" class="on">— / —</span> up</div>
         <div><span class="k">UPDATED</span> <span id="m-upd">—</span></div>
         <div id="m-clock">--:--:--</div>
       </div>
@@ -393,6 +476,25 @@ function sectionFor(node, guests){
 
 function showErr(msg){ const e=document.getElementById('err'); e.textContent='> '+msg; e.style.display='block'; }
 
+function clusterHeader(c, up, total, nUp, nTot){
+  const ok = c.ok;
+  const sub = ok ? (nUp+' / '+nTot+' nodes · '+up+' / '+total+' guests up')
+                 : esc(c.error || 'unreachable');
+  return '<div class="clusterbar'+(ok?'':' off')+'">'
+    + '<div class="cname">'+esc(c.name)+' <span class="cstate">'+(ok?'online':'unreachable')+'</span></div>'
+    + '<div class="csub">'+sub+'</div></div>';
+}
+
+function prepNodes(c){
+  const nodes = (c.nodes||[]).slice(), guests = c.guests||[];
+  const byNode = {};
+  guests.forEach(g => { (byNode[g.node] = byNode[g.node] || []).push(g); });
+  const names = nodes.map(n => n.name);
+  // any guest on a node not returned in nodes[] still gets a section
+  Object.keys(byNode).forEach(n => { if(!names.includes(n)) nodes.push({name:n,status:'',maxcpu:0,uptime:0,cpu:0,mem:0,maxmem:0,disk:0,maxdisk:0}); });
+  return {nodes, byNode, guests};
+}
+
 async function refresh(){
   let doc;
   try{
@@ -400,22 +502,35 @@ async function refresh(){
     doc = await r.json();
   }catch(e){ showErr('could not reach /api/resources — is pve-glance running?'); return; }
   if(doc.error){ showErr('error: '+doc.error); return; }
-  document.getElementById('err').style.display = 'none';
 
-  const nodes = doc.nodes || [], guests = doc.guests || [];
-  const byNode = {};
-  guests.forEach(g => { (byNode[g.node] = byNode[g.node] || []).push(g); });
+  const clusters = doc.clusters || [];
+  const multi = clusters.length > 1;
+  let html = '', tNodes = 0, tGuests = 0, tRunning = 0, cOk = 0;
 
-  // any guest on a node not returned in nodes[] still gets a section
-  const names = nodes.map(n => n.name);
-  Object.keys(byNode).forEach(n => { if(!names.includes(n)) nodes.push({name:n,status:'',maxcpu:0,uptime:0,cpu:0,mem:0,maxmem:0,disk:0,maxdisk:0}); });
+  clusters.forEach(c => {
+    const {nodes, byNode, guests} = prepNodes(c);
+    const running = guests.filter(g => g.status === 'running').length;
+    const nUp = nodes.filter(n => n.status === 'online').length;
+    tNodes += nodes.length; tGuests += guests.length; tRunning += running;
+    if(c.ok) cOk++;
+    if(multi) html += clusterHeader(c, running, guests.length, nUp, nodes.length);
+    if(c.ok) html += nodes.map(n => sectionFor(n, byNode[n.name] || [])).join('');
+  });
 
-  document.getElementById('sections').innerHTML =
-    nodes.map(n => sectionFor(n, byNode[n.name] || [])).join('') || '<div class="err" style="display:block">no nodes returned</div>';
+  const singleFail = !multi && clusters.length === 1 && !clusters[0].ok;
+  if(singleFail){
+    showErr('error: '+(clusters[0].error || 'unreachable'));
+    document.getElementById('sections').innerHTML = '';
+  }else{
+    document.getElementById('err').style.display = 'none';
+    document.getElementById('sections').innerHTML = html ||
+      '<div class="err" style="display:block">no data returned</div>';
+  }
 
-  const running = guests.filter(g=>g.status==='running').length;
-  document.getElementById('m-nodes').textContent = nodes.length;
-  document.getElementById('m-guests').textContent = running+' / '+guests.length;
+  document.getElementById('m-cl').innerHTML = multi
+    ? '<span class="k">CLUSTERS</span> '+cOk+' / '+clusters.length+' · ' : '';
+  document.getElementById('m-nodes').textContent = tNodes;
+  document.getElementById('m-guests').textContent = tRunning+' / '+tGuests;
   document.getElementById('m-upd').textContent = new Date((doc.updated||0)*1000).toLocaleTimeString();
 }
 
@@ -451,7 +566,13 @@ refresh(); setInterval(refresh, 10000);
 
 def main():
     httpd = ThreadingHTTPServer((BIND, PORT), Handler)
-    source = ("remote " + API_URL) if API_URL else "local pvesh"
+    try:
+        tg = targets()
+        source = ("local pvesh" if not tg
+                  else "remote " + tg[0]["url"] if len(tg) == 1
+                  else "%d remote clusters" % len(tg))
+    except Exception as exc:
+        source = "CONFIG ERROR: %s" % exc
     print("pve-glance serving on http://%s:%d  (source: %s, auth: %s)"
           % (BIND, PORT, source, "on" if AUTH else "off"), flush=True)
     try:
