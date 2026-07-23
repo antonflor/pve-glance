@@ -9,6 +9,8 @@ root permissions of the node it runs on.
 
     python3 pve-glance.py         # then open http://<node-ip>:8008
 
+Created by MONTYLABS — https://github.com/antonflor/pve-glance
+
 Configuration (all optional, via environment variables):
     PVE_GLANCE_BIND     interface to bind      (default 0.0.0.0)
     PVE_GLANCE_PORT     port to listen on      (default 8008)
@@ -287,7 +289,8 @@ h3 .cnt{color:var(--fg-mute);font-size:10px;letter-spacing:.06em;margin-left:aut
 
   <div class="foot">
     pve-glance · zero-dependency single-file dashboard · auto-refreshes every 10s ·
-    <a href="/api/resources">/api/resources</a>
+    <a href="/api/resources">/api/resources</a> ·
+    built by <a href="https://github.com/antonflor/pve-glance">MONTYLABS</a>
   </div>
 </div>
 

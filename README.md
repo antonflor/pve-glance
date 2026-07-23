@@ -13,11 +13,24 @@ live CPU, RAM, and disk meters, color-coded by load — in your browser.
 python3 pve-glance.py        # then open http://<node-ip>:8008
 ```
 
-## Screenshot
+## Screenshots
 
-Each guest is a card with three meters. Bars are **green < 70%**, **amber 70–90%**,
-**red ≥ 90%**, and every bar shows its own number, so color is never the only signal.
-VMs show disk as `n/a` — see [notes](#notes).
+Three built-in themes — switch from the header buttons; the choice is remembered per
+browser. Each guest card has CPU / RAM / disk meters colored **green < 70%**,
+**amber 70–90%**, **red ≥ 90%**, with the number always shown so color is never the only
+signal. VMs show disk as `n/a` (see [notes](#notes)).
+
+**Dark** (default)
+
+![pve-glance — dark theme](docs/dark.png)
+
+**Light**
+
+![pve-glance — light theme](docs/light.png)
+
+**Monty**
+
+![pve-glance — monty theme](docs/monty.png)
 
 ## Requirements
 
@@ -97,6 +110,12 @@ don't multiply the work.
   misleading 0%. LXC container disk figures are real. (For true in-VM disk usage you'd
   need a guest agent + a metrics stack like Prometheus node_exporter.)
 - **Only VMs and LXCs are shown** — storage and SDN resources are filtered out.
+
+## Author
+
+Built by **MONTYLABS** — [github.com/antonflor](https://github.com/antonflor). Made for my
+own homelab, shared for yours. If it's handy on your cluster, a ⭐ on the
+[repo](https://github.com/antonflor/pve-glance) is appreciated.
 
 ## License
 
