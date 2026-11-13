@@ -341,9 +341,9 @@ PAGE = r"""<!DOCTYPE html>
 <meta charset="UTF-8" />
 <meta name="viewport" content="width=device-width, initial-scale=1.0" />
 <title>pve-glance</title>
-<script>try{document.documentElement.setAttribute('data-theme',localStorage.getItem('pgtheme')||'dark')}catch(e){}</script>
+<script>try{document.documentElement.setAttribute('data-theme',['light','dark','monty','stars','tricolor'].includes(localStorage.getItem('pgtheme'))?localStorage.getItem('pgtheme'):'dark')}catch(e){}</script>
 <style>
-/* ---- THEMES ---- switch via the header buttons; add your own by copying a block.
+/* ---- THEMES ---- switch in Settings; add your own by copying a block.
    The active theme is set with data-theme on <html>. Default (no attribute) = dark. */
 :root, :root[data-theme="dark"]{
   --bg:#0b0e13;--panel:#11151c;--fg:#e8ecf1;--fg-dim:#94a0b0;--fg-mute:#5b6672;
@@ -378,6 +378,25 @@ PAGE = r"""<!DOCTYPE html>
   --ff:"JetBrains Mono",ui-monospace,Menlo,monospace;
   --ff-d:"Space Grotesk",system-ui,-apple-system,sans-serif;
 }
+:root[data-theme="stars"]{
+  --bg:#0b152a;--panel:#13223d;--fg:#f7f9ff;--fg-dim:#bdcbe4;--fg-mute:#9bacc9;
+  --accent:#91bdff;--vm:#c6b5ff;--ct:#91bdff;
+  --good:#6fe0a0;--warn:#ffd074;--crit:#ff8e98;
+  --line:rgba(247,249,255,.14);--line-2:rgba(247,249,255,.25);
+  --track:rgba(255,255,255,.09);--hatch:rgba(255,255,255,.08);--shadow:0 4px 24px #040c1b44;
+  --glow:radial-gradient(ellipse at 10% 0%,#416fba22,transparent 55%);
+}
+:root[data-theme="tricolor"]{
+  --bg:#f4f4ee;--panel:#ffffff;--fg:#172e27;--fg-dim:#405f52;--fg-mute:#587163;
+  --accent:#076b49;--vm:#70408e;--ct:#076b70;
+  --good:#167448;--warn:#8b5900;--crit:#bc303b;
+  --line:rgba(23,46,39,.14);--line-2:rgba(23,46,39,.25);
+  --track:rgba(23,46,39,.09);--hatch:rgba(23,46,39,.09);--shadow:0 2px 14px #173f2910;
+  --glow:radial-gradient(ellipse at 90% 0%,#b62b3710,transparent 55%);
+}
+:root[data-theme="stars"] .hostpanel::before{background:linear-gradient(#e87987 0 33%,#f7f9ff 33% 66%,#91bdff 66%)}
+:root[data-theme="tricolor"] .hostpanel::before{background:linear-gradient(#076b49 0 33%,#d9dfd9 33% 66%,#bc303b 66%)}
+:root[data-theme="stars"] .hostpanel.off::before,:root[data-theme="tricolor"] .hostpanel.off::before{background:var(--crit)}
 *{box-sizing:border-box}
 html,body{margin:0;background:var(--bg);color:var(--fg);font-family:var(--ff);min-height:100%}
 body{background:var(--glow),var(--bg)}
@@ -390,11 +409,30 @@ body{background:var(--glow),var(--bg)}
 @keyframes blink{50%{opacity:0}}
 .tag{color:var(--fg-dim);font-size:12px;letter-spacing:.04em;margin-top:7px}
 .right{display:flex;flex-direction:column;align-items:flex-end;gap:9px}
-.themesel{display:flex;gap:4px}
-.themesel button{font-family:var(--ff);font-size:10px;letter-spacing:.07em;text-transform:uppercase;
-  background:transparent;color:var(--fg-mute);border:1px solid var(--line-2);border-radius:5px;padding:4px 9px;cursor:pointer;transition:.14s}
-.themesel button:hover{color:var(--fg-dim);border-color:var(--fg-mute)}
-.themesel button.active{color:var(--accent);border-color:var(--accent)}
+button{font:inherit;cursor:pointer}
+.settings-button,.settings-close,.settings-reset{border:1px solid var(--line-2);border-radius:7px;
+  background:var(--panel);color:var(--fg);padding:9px 13px;font-size:12px}
+button:hover{border-color:var(--accent)}
+:focus-visible{outline:2px solid var(--accent);outline-offset:4px}
+.settings{color:var(--fg);background:var(--panel);border:1px solid var(--line-2);
+  border-radius:14px;padding:26px;width:min(540px,calc(100% - 32px));max-height:calc(100dvh - 32px);
+  box-shadow:0 24px 100px #0007;overflow:auto}
+.settings::backdrop{background:#040910aa;backdrop-filter:blur(4px)}
+.settings-head{display:flex;justify-content:space-between;align-items:center;gap:16px}
+.settings h2{font-family:var(--ff-d);font-size:22px;margin:0}
+.settings p{color:var(--fg-dim);font-size:12px;line-height:1.7}
+.settings fieldset{border:0;padding:0;margin:26px 0}
+.settings legend{font-size:11px;text-transform:uppercase;letter-spacing:.12em;margin-bottom:12px;color:var(--fg-dim)}
+.theme-options{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:10px}
+.theme-option{position:relative;display:flex;align-items:center;gap:10px;padding:12px;border:1px solid var(--line-2);
+  border-radius:8px;cursor:pointer;font-size:12px;min-height:60px}
+.theme-option:has(input:checked){border-color:var(--accent);box-shadow:inset 0 0 0 1px var(--accent)}
+.theme-option input{margin:0;accent-color:var(--accent);width:16px;height:16px;flex-shrink:0}
+.theme-swatch{width:26px;height:26px;border:1px solid #8993a777;border-radius:50%;flex-shrink:0}
+.settings-footer{border-top:1px solid var(--line);padding-top:18px;display:flex;flex-wrap:wrap;align-items:center;gap:12px}
+.settings-footer p{flex:1;min-width:160px;margin:0;font-size:11px}
+@media(max-width:400px){.theme-options{grid-template-columns:1fr}.settings{padding:20px}}
+@media(prefers-reduced-motion:reduce){.cursor{animation:none}}
 .meta{font-size:11px;color:var(--fg-dim);text-align:right;line-height:1.8;letter-spacing:.03em}
 .meta .k{color:var(--fg-mute)} .meta .on{color:var(--good)}
 
@@ -466,11 +504,7 @@ h3 .cnt{color:var(--fg-mute);font-size:10px;letter-spacing:.06em;margin-left:aut
       <div class="tag" id="tag">live at-a-glance view of every node &amp; guest</div>
     </div>
     <div class="right">
-      <div class="themesel">
-        <button data-set="light">Light</button>
-        <button data-set="dark">Dark</button>
-        <button data-set="monty">Monty</button>
-      </div>
+      <button class="settings-button" id="settings-open" type="button" aria-haspopup="dialog" aria-controls="settings">Settings</button>
       <div class="meta">
         <div><span id="m-cl"></span><span class="k">NODES</span> <span id="m-nodes">—</span> · <span class="k">GUESTS</span> <span id="m-guests" class="on">— / —</span> up</div>
         <div><span class="k">UPDATED</span> <span id="m-upd">—</span></div>
@@ -496,6 +530,29 @@ h3 .cnt{color:var(--fg-mute);font-size:10px;letter-spacing:.06em;margin-left:aut
     built by <a href="https://github.com/antonflor/pve-glance">MONTYLABS</a>
   </div>
 </div>
+
+
+<dialog class="settings" id="settings" aria-labelledby="settings-title" aria-describedby="settings-description">
+  <div class="settings-head">
+    <h2 id="settings-title">Settings</h2>
+    <button class="settings-close" id="settings-close" type="button" autofocus>Close</button>
+  </div>
+  <p id="settings-description">Make this dashboard your own. Preferences apply to this browser.</p>
+  <fieldset>
+    <legend>Appearance</legend>
+    <div class="theme-options">
+      <label class="theme-option"><input type="radio" name="theme" value="light"><span class="theme-swatch" aria-hidden="true" style="background:linear-gradient(135deg,#f5f7fa 50%,#0d9488 50%)"></span>Light</label>
+      <label class="theme-option"><input type="radio" name="theme" value="dark"><span class="theme-swatch" aria-hidden="true" style="background:linear-gradient(135deg,#11151c 50%,#2dd4bf 50%)"></span>Dark</label>
+      <label class="theme-option"><input type="radio" name="theme" value="monty"><span class="theme-swatch" aria-hidden="true" style="background:linear-gradient(135deg,#101013 50%,#d1ff48 50%)"></span>Monty</label>
+      <label class="theme-option"><input type="radio" name="theme" value="stars"><span class="theme-swatch" aria-hidden="true" style="background:linear-gradient(135deg,#b73548 33%,#f7f9ff 33% 66%,#234e8f 66%)"></span>Stars</label>
+      <label class="theme-option"><input type="radio" name="theme" value="tricolor"><span class="theme-swatch" aria-hidden="true" style="background:linear-gradient(135deg,#076b49 33%,#fff 33% 66%,#bc303b 66%)"></span>Tricolor</label>
+    </div>
+  </fieldset>
+  <div class="settings-footer">
+    <p id="settings-status" role="status" aria-live="polite">Saved in this browser.</p>
+    <button class="settings-reset" id="settings-reset" type="button">Reset settings</button>
+  </div>
+</dialog>
 
 <script>
 const GiB = 1073741824;
@@ -622,25 +679,43 @@ async function refresh(){
 }
 
 // ---------- theme switcher ----------
-const THEMES = ['light','dark','monty'];
+const THEMES = ['light','dark','monty','stars','tricolor'];
 const BRANDS = {
   monty: ['<b>MONTY</b>LABS<span class="cursor"></span>', '// live infrastructure at a glance'],
   def:   ['<b>pve</b><span class="dotc">·</span>glance', 'live at-a-glance view of every node &amp; guest'],
 };
-function applyTheme(t){
+function applyTheme(t, persist = true){
   if(!THEMES.includes(t)) t = 'dark';
   document.documentElement.setAttribute('data-theme', t);
-  try{ localStorage.setItem('pgtheme', t); }catch(e){}
-  document.querySelectorAll('.themesel button').forEach(b => b.classList.toggle('active', b.dataset.set === t));
+  if(persist){
+    try{
+      localStorage.setItem('pgtheme', t);
+      document.getElementById('settings-status').textContent = 'Saved in this browser.';
+    }catch(e){
+      document.getElementById('settings-status').textContent = 'Applied for this visit. Browser storage is unavailable.';
+    }
+  }
+  document.querySelectorAll('input[name="theme"]').forEach(input => { input.checked = input.value === t; });
   const [brand, tag] = BRANDS[t === 'monty' ? 'monty' : 'def'];
   document.getElementById('brand').innerHTML = brand;
   document.getElementById('tag').innerHTML = tag;
 }
-document.querySelectorAll('.themesel button').forEach(b =>
-  b.addEventListener('click', () => applyTheme(b.dataset.set)));
+document.querySelectorAll('input[name="theme"]').forEach(input =>
+  input.addEventListener('change', () => { if(input.checked) applyTheme(input.value); }));
+const settings = document.getElementById('settings');
+document.getElementById('settings-open').addEventListener('click', () => settings.showModal());
+document.getElementById('settings-close').addEventListener('click', () => settings.close());
+settings.addEventListener('click', event => {
+  const rect = settings.getBoundingClientRect();
+  if(event.target === settings && (event.clientX < rect.left || event.clientX > rect.right
+      || event.clientY < rect.top || event.clientY > rect.bottom)) settings.close();
+});
+document.getElementById('settings-reset').addEventListener('click', () => applyTheme('dark'));
 let saved = 'dark';
-try{ saved = localStorage.getItem('pgtheme') || 'dark'; }catch(e){}
-applyTheme(saved);
+try{ saved = localStorage.getItem('pgtheme') || 'dark'; }catch(e){
+  document.getElementById('settings-status').textContent = 'Applied for this visit. Browser storage is unavailable.';
+}
+applyTheme(saved, false);
 
 function clock(){ document.getElementById('m-clock').textContent = new Date().toLocaleTimeString(); }
 setInterval(clock, 1000); clock();
