@@ -414,24 +414,27 @@ button{font:inherit;cursor:pointer}
   background:var(--panel);color:var(--fg);padding:9px 13px;font-size:12px}
 button:hover{border-color:var(--accent)}
 :focus-visible{outline:2px solid var(--accent);outline-offset:4px}
+/* Settings opens as a panel anchored under the Settings button, with no dimmed
+   backdrop, so the dashboard stays visible and theme changes preview live. */
 .settings{color:var(--fg);background:var(--panel);border:1px solid var(--line-2);
-  border-radius:14px;padding:26px;width:min(540px,calc(100% - 32px));max-height:calc(100dvh - 32px);
-  box-shadow:0 24px 100px #0007;overflow:auto}
-.settings::backdrop{background:#040910aa;backdrop-filter:blur(4px)}
+  border-radius:12px;padding:20px;width:min(340px,calc(100% - 32px));max-height:calc(100dvh - 116px);
+  margin:92px max(24px,calc((100vw - 1072px) / 2)) auto auto;
+  box-shadow:0 18px 60px #0008,0 0 0 1px #0003;overflow:auto}
+.settings::backdrop{background:transparent}
 .settings-head{display:flex;justify-content:space-between;align-items:center;gap:16px}
-.settings h2{font-family:var(--ff-d);font-size:22px;margin:0}
-.settings p{color:var(--fg-dim);font-size:12px;line-height:1.7}
-.settings fieldset{border:0;padding:0;margin:26px 0}
+.settings h2{font-family:var(--ff-d);font-size:18px;margin:0}
+.settings p{color:var(--fg-dim);font-size:12px;line-height:1.6;margin:8px 0 0}
+.settings fieldset{border:0;padding:0;margin:18px 0}
 .settings legend{font-size:11px;text-transform:uppercase;letter-spacing:.12em;margin-bottom:12px;color:var(--fg-dim)}
-.theme-options{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:10px}
-.theme-option{position:relative;display:flex;align-items:center;gap:10px;padding:12px;border:1px solid var(--line-2);
-  border-radius:8px;cursor:pointer;font-size:12px;min-height:60px}
+.theme-options{display:grid;grid-template-columns:1fr;gap:6px}
+.theme-option{position:relative;display:flex;align-items:center;gap:10px;border:1px solid var(--line-2);
+  border-radius:8px;cursor:pointer;font-size:12px;min-height:44px;padding:8px 12px}
 .theme-option:has(input:checked){border-color:var(--accent);box-shadow:inset 0 0 0 1px var(--accent)}
 .theme-option input{margin:0;accent-color:var(--accent);width:16px;height:16px;flex-shrink:0}
-.theme-swatch{width:26px;height:26px;border:1px solid #8993a777;border-radius:50%;flex-shrink:0}
-.settings-footer{border-top:1px solid var(--line);padding-top:18px;display:flex;flex-wrap:wrap;align-items:center;gap:12px}
-.settings-footer p{flex:1;min-width:160px;margin:0;font-size:11px}
-@media(max-width:400px){.theme-options{grid-template-columns:1fr}.settings{padding:20px}}
+.theme-swatch{width:22px;height:22px;border:1px solid #8993a777;border-radius:50%;flex-shrink:0}
+.settings-footer{border-top:1px solid var(--line);padding-top:14px;display:flex;flex-wrap:wrap;align-items:center;gap:12px}
+.settings-footer p{flex:1;min-width:120px;margin:0;font-size:11px}
+@media(max-width:400px){.settings{margin:88px 16px auto auto;padding:16px}}
 @media(prefers-reduced-motion:reduce){.cursor{animation:none}}
 .meta{font-size:11px;color:var(--fg-dim);text-align:right;line-height:1.8;letter-spacing:.03em}
 .meta .k{color:var(--fg-mute)} .meta .on{color:var(--good)}
@@ -535,9 +538,9 @@ h3 .cnt{color:var(--fg-mute);font-size:10px;letter-spacing:.06em;margin-left:aut
 <dialog class="settings" id="settings" aria-labelledby="settings-title" aria-describedby="settings-description">
   <div class="settings-head">
     <h2 id="settings-title">Settings</h2>
-    <button class="settings-close" id="settings-close" type="button" autofocus>Close</button>
+    <button class="settings-close" id="settings-close" type="button">Close</button>
   </div>
-  <p id="settings-description">Make this dashboard your own. Preferences apply to this browser.</p>
+  <p id="settings-description">Changes apply instantly.</p>
   <fieldset>
     <legend>Appearance</legend>
     <div class="theme-options">
@@ -703,7 +706,12 @@ function applyTheme(t, persist = true){
 document.querySelectorAll('input[name="theme"]').forEach(input =>
   input.addEventListener('change', () => { if(input.checked) applyTheme(input.value); }));
 const settings = document.getElementById('settings');
-document.getElementById('settings-open').addEventListener('click', () => settings.showModal());
+document.getElementById('settings-open').addEventListener('click', () => {
+  settings.showModal();
+  // Start on the current choice, not the Close button, so the focus ring marks what's selected.
+  const current = [...document.querySelectorAll('input[name="theme"]')].find(input => input.checked);
+  if(current) current.focus();
+});
 document.getElementById('settings-close').addEventListener('click', () => settings.close());
 settings.addEventListener('click', event => {
   const rect = settings.getBoundingClientRect();
