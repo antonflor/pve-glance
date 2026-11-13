@@ -16,8 +16,8 @@ python3 pve-glance.py        # then open http://<node-ip>:8008
 
 ## Screenshots
 
-Three built-in themes — switch from the header buttons; the choice is remembered per
-browser. Each guest card has CPU / RAM / disk meters colored **green < 70%**,
+Five built-in themes — pick one from **Settings** at the top right; the choice is
+remembered per browser. Each guest card has CPU / RAM / disk meters colored **green < 70%**,
 **amber 70–90%**, **red ≥ 90%**, with the number always shown so color is never the only
 signal. KVM VMs report filesystem usage through the QEMU Guest Agent (see [notes](#notes)).
 
@@ -65,7 +65,9 @@ Remove everything with `sudo ./uninstall.sh`.
 ## Configuration
 
 All optional, via environment variables (set them in `pve-glance.service` and
-`systemctl restart pve-glance`):
+`systemctl restart pve-glance`). Not sure which ones you need? The
+[diagram in How it works](#how-it-works) shows where each setting goes and which
+mode it switches on.
 
 | Variable | Default | Meaning |
 |---|---|---|
@@ -85,10 +87,11 @@ All optional, via environment variables (set them in `pve-glance.service` and
 
 ### Theming
 
-Three built-in themes — **Dark** (default), **Light**, and **Monty** — switch from the
-buttons in the header and the choice is remembered per browser (localStorage). Each is a
-block of CSS variables near the top of the embedded stylesheet in `pve-glance.py`; copy a
-block, give it a new `data-theme` name, and add a matching button to make your own. No
+Five built-in themes — **Dark** (default), **Light**, **Monty**, **Stars** and
+**Tricolor** — chosen in **Settings → Appearance** and remembered per browser
+(localStorage). Each is a block of CSS variables near the top of the embedded stylesheet
+in `pve-glance.py`; copy a block, give it a new `data-theme` name, add it to the
+`THEMES` list and add a matching option in the Settings dialog to make your own. No
 external fonts or assets are loaded in any theme.
 
 ## Remote mode (run it off the node)
@@ -156,10 +159,91 @@ without an API token). Two things to know:
 
 ## How it works
 
+**Where your settings go, and which mode they turn on.** Yellow boxes are the only
+things you ever edit. With nothing set, you get local mode on the node it runs on.
+
+```mermaid
+%%{init: {"flowchart": {"wrappingWidth": 360, "nodeSpacing": 40, "rankSpacing": 50}}}%%
+flowchart TD
+  subgraph SET["① Where you put settings — all optional"]
+    direction LR
+    JSON["<b>targets.json</b> (multi-cluster)<br/>[ {name, url, token, verify}, … ]<br/>copy targets.example.json"]
+    SHELL["<b>or your shell</b><br/>PVE_GLANCE_PORT=9000 python3 pve-glance.py"]
+    UNIT["<b>systemd unit</b><br/>/etc/systemd/system/pve-glance.service<br/>Environment=PVE_GLANCE_…=…<br/>then: systemctl restart pve-glance"]
+  end
+
+  SET --> START
+
+  START["<b>② pve-glance.py starts</b><br/>listens on PVE_GLANCE_BIND : PVE_GLANCE_PORT  (default 0.0.0.0:8008)<br/>optional login: PVE_GLANCE_AUTH=user:pass"]
+
+  START --> Q1{"PVE_GLANCE_TARGETS_FILE<br/>or PVE_GLANCE_TARGETS set?<br/><i>(file wins if both)</i>"}
+  Q1 -->|yes| MULTI["<b>Multi-cluster remote</b><br/>one entry per cluster in targets.json<br/>all polled in parallel<br/>a down cluster shows an error banner"]
+  Q1 -->|no| Q2{"PVE_GLANCE_API_URL<br/>set?"}
+  Q2 -->|yes| SINGLE["<b>Single remote</b><br/>PVE_GLANCE_API_URL=https://&lt;pve-ip&gt;:8006<br/>PVE_GLANCE_API_TOKEN=user@pve!id=secret<br/>PVE_GLANCE_API_VERIFY · _API_TIMEOUT"]
+  Q2 -->|no| LOCAL["<b>Local mode</b> (default)<br/>runs on a PVE node as root, no token<br/>PVE_GLANCE_PVESH · PVE_GLANCE_LOCAL_NAME"]
+
+  MULTI --> API
+  SINGLE --> API
+  LOCAL --> PVESH
+
+  subgraph PVE["③ Proxmox VE"]
+    direction LR
+    API["<b>PVE HTTP API</b> :8006<br/>GET /api2/json/cluster/resources<br/>read-only token: PVEAuditor<br/>+ VM.GuestAgent.Audit for disk meters"]
+    PVESH["<b>pvesh</b> on this node<br/>pvesh get /cluster/resources"]
+    QGA["<b>qemu-guest-agent</b> in each VM<br/>+ VM Options → QEMU Guest Agent<br/>→ per-filesystem disk meters"]
+  end
+
+  API --> OUT
+  PVESH --> OUT
+  QGA -.->|"agent/get-fsinfo · cached 30 s"| OUT
+
+  OUT["<b>④ GET /api/resources</b><br/>{updated, clusters: [{nodes, guests}]}<br/>shared cache: PVE_GLANCE_CACHE (3 s)"]
+  OUT --> UI["<b>⑤ Browser dashboard</b><br/>polls every 10 s<br/>theme: Settings → Appearance (saved in this browser)"]
+
+  classDef you fill:#fff4c2,stroke:#c99a00,color:#3a2c00
+  classDef app fill:#e6efff,stroke:#5b7fd6,color:#10213f
+  classDef pve fill:#ffe9dc,stroke:#e57000,color:#3d1c00
+  classDef ui fill:#e3f7ef,stroke:#2f9e6e,color:#0d3324
+  class UNIT,SHELL,JSON you
+  class START,Q1,Q2,MULTI,SINGLE,LOCAL,OUT app
+  class API,PVESH,QGA pve
+  class UI ui
 ```
-browser ──/──────────▶ pve-glance.py ──▶ local:  pvesh get /cluster/resources
-        ──/api/resources─▶  (stdlib http.server)  remote: GET /api2/json/cluster/resources
-                                                          (cached a few seconds)
+
+**What happens on every refresh:**
+
+```mermaid
+sequenceDiagram
+  autonumber
+  participant B as Browser
+  participant S as pve-glance.py
+  participant C as Shared cache
+  participant P as Proxmox<br/>(pvesh or API)
+  participant A as Guest agent<br/>(each running VM)
+
+  B->>S: GET /
+  S-->>B: dashboard page (HTML/CSS/JS embedded in the .py)
+
+  loop every 10 seconds
+    B->>S: GET /api/resources
+    opt login enabled (PVE_GLANCE_AUTH)
+      Note over S,C: check basic auth, 401 if wrong
+    end
+    S->>C: anything newer than PVE_GLANCE_CACHE (3 s)?
+    alt fresh
+      C-->>S: cached result (no Proxmox calls)
+    else stale
+      par each cluster / target in parallel
+        S->>P: GET /cluster/resources
+        P-->>S: nodes + guests (storage and SDN dropped)
+        S->>A: agent/get-fsinfo, 4 at a time, 5 s timeout
+        A-->>S: filesystems, or an n/a status (cached 30 s)
+      end
+      S->>C: store result
+    end
+    S-->>B: JSON {updated, clusters: [{nodes, guests}]}
+    Note over B,S: draw meters: green under 70%, amber 70–90%, red 90%+
+  end
 ```
 
 The page polls `/api/resources` every 10 seconds. In **local mode** the server shells out
