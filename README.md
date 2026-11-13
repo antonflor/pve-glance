@@ -204,3 +204,12 @@ own homelab, shared for yours. If it's handy on your cluster, a ⭐ on the
 ## License
 
 MIT — see [LICENSE](LICENSE).
+
+## Appearance settings
+
+Open **Settings** at the top right to choose Light, Dark, Monty, Stars (navy,
+white and red), or Tricolor (green, white and red). Changes apply immediately
+and are saved in this browser; existing theme preferences are preserved.
+**Reset settings** restores Dark. If browser storage is unavailable, changes
+still work for the current visit. Close the panel with Close, Escape, or by
+clicking outside it.
