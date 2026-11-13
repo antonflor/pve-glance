@@ -33,6 +33,7 @@ Configuration (all optional, via environment variables):
 
 MIT licensed. No external dependencies — Python 3 standard library only.
 """
+from concurrent.futures import ThreadPoolExecutor
 import base64
 import json
 import os
@@ -42,6 +43,8 @@ import subprocess
 import threading
 import time
 import urllib.request
+import urllib.error
+from urllib.parse import quote
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
 BIND = os.environ.get("PVE_GLANCE_BIND", "0.0.0.0")
@@ -99,17 +102,17 @@ def reshape(items):
     return {"updated": int(time.time()), "nodes": nodes, "guests": guests}
 
 
-def _pvesh_items():
+def _pvesh_get(path, timeout=25):
     """Local mode: read /cluster/resources via the pvesh CLI (runs on a PVE node)."""
     proc = subprocess.run(
-        [PVESH, "get", "/cluster/resources", "--output-format", "json"],
-        capture_output=True, text=True, timeout=25)
+        [PVESH, "get", path, "--output-format", "json"],
+        capture_output=True, text=True, timeout=timeout)
     if proc.returncode != 0:
         raise RuntimeError(proc.stderr.strip() or "pvesh exited non-zero")
     return json.loads(proc.stdout or "[]")
 
 
-def _http_items(target):
+def _http_get(target, path, timeout=API_TIMEOUT):
     """Remote mode: read /cluster/resources from one PVE target over the HTTP API."""
     token = target["token"]
     if not token:
@@ -121,10 +124,89 @@ def _http_items(target):
         ctx.check_hostname = False
         ctx.verify_mode = ssl.CERT_NONE
     req = urllib.request.Request(
-        target["url"] + "/api2/json/cluster/resources",
+        target["url"] + "/api2/json" + path,
         headers={"Authorization": "PVEAPIToken=" + token})
-    with urllib.request.urlopen(req, timeout=API_TIMEOUT, context=ctx) as resp:
+    with urllib.request.urlopen(req, timeout=timeout, context=ctx) as resp:
         return json.loads(resp.read().decode("utf-8")).get("data", [])
+
+
+# Agent calls are automatic, bounded, and cached separately from CPU/RAM.
+# Cache entries are scoped to the target (including its credentials) and guest.
+_disk_cache = {}
+DISK_TTL = 30
+AGENT_TIMEOUT = 5
+
+
+def filesystems(payload):
+    """Keep actual filesystems with usable usage counters, including empty disks."""
+    rows = payload.get("result", []) if isinstance(payload, dict) else payload
+    if not isinstance(rows, list):
+        return []
+    out = []
+    seen = set()
+    for fs in rows:
+        if not isinstance(fs, dict):
+            continue
+        mount = fs.get("mountpoint")
+        used, total = fs.get("used-bytes"), fs.get("total-bytes")
+        if (not isinstance(mount, str) or not mount or mount in seen
+                or fs.get("type", "").lower() in
+                {"tmpfs", "devtmpfs", "squashfs", "iso9660", "overlay", "nfs", "nfs4", "cifs"}
+                or ("disk" in fs and not fs["disk"])
+                or type(used) is not int or type(total) is not int
+                or total <= 0 or used < 0 or used > total):
+            continue
+        seen.add(mount)
+        out.append({"mountpoint": mount, "type": fs.get("type", ""),
+                    "disk": used, "maxdisk": total})
+    return sorted(out, key=lambda f: (f["mountpoint"] not in ("/", "C:\\"), f["mountpoint"]))
+
+
+def guest_disks(cluster, target=None):
+    """Enrich running VMs; an unavailable agent never fails the cluster."""
+    now = time.monotonic()
+    scope = (target["url"], target["token"], target["verify"]) if target else ("local",)
+    active = {(scope, g["node"], g["vmid"]) for g in cluster["guests"]
+              if g["type"] == "qemu" and g["status"] == "running"}
+    for key in list(_disk_cache):
+        if key[0] == scope and key not in active:
+            del _disk_cache[key]
+
+    def work(g):
+        if g["type"] != "qemu":
+            return
+        g.update(filesystems=[], disk_status="stopped", disk=0, maxdisk=0)
+        if g["status"] != "running":
+            return
+        key = (scope, g["node"], g["vmid"])
+        cached = _disk_cache.get(key)
+        if cached and now - cached[0] < DISK_TTL:
+            g.update(cached[1])
+            return
+        path = "/nodes/%s/qemu/%s/agent/get-fsinfo" % (
+            quote(str(g["node"]), safe=""), quote(str(g["vmid"]), safe=""))
+        result = {"filesystems": [], "disk_status": "agent unavailable"}
+        try:
+            payload = (_http_get(target, path, AGENT_TIMEOUT) if target
+                       else _pvesh_get(path, AGENT_TIMEOUT))
+            rows = filesystems(payload)
+            result = {"filesystems": rows,
+                      "disk_status": "ok" if rows else "no filesystem data"}
+            if rows:
+                result.update(disk=rows[0]["disk"], maxdisk=rows[0]["maxdisk"])
+        except urllib.error.HTTPError as exc:
+            if exc.code in (401, 403):
+                result["disk_status"] = "permission denied"
+        except (subprocess.TimeoutExpired, TimeoutError):
+            result["disk_status"] = "agent timed out"
+        except Exception:
+            pass  # Do not expose remote tokens, URLs or raw guest-agent errors.
+        _disk_cache[key] = (time.monotonic(), result)
+        g.update(result)
+
+    with ThreadPoolExecutor(max_workers=4) as pool:
+        list(pool.map(work, cluster["guests"]))
+    return cluster
 
 
 def _host_of(url):
@@ -167,7 +249,7 @@ def collect():
     tgts = targets()
     if not tgts:                             # local pvesh — a single cluster
         try:
-            clusters = [_cluster(LOCAL_NAME, _pvesh_items())]
+            clusters = [guest_disks(_cluster(LOCAL_NAME, _pvesh_get("/cluster/resources")))]
         except Exception as exc:
             clusters = [{"name": LOCAL_NAME, "ok": False, "error": str(exc),
                          "nodes": [], "guests": []}]
@@ -177,7 +259,7 @@ def collect():
 
     def work(i, t):
         try:
-            clusters[i] = _cluster(t["name"], _http_items(t))
+            clusters[i] = guest_disks(_cluster(t["name"], _http_get(t, "/cluster/resources")), t)
         except Exception as exc:
             clusters[i] = {"name": t["name"], "ok": False, "error": str(exc),
                            "nodes": [], "guests": []}
@@ -452,7 +534,12 @@ function nodePanel(n){
 function guestCard(g){
   const on = g.status === 'running', isVM = g.type === 'qemu';
   const cpu=(g.cpu||0)*100, mem=g.maxmem?g.mem/g.maxmem*100:0, dsk=g.maxdisk?g.disk/g.maxdisk*100:0;
-  const diskNA = isVM || !g.disk;   // Proxmox reports no in-guest fs usage for VMs
+  const diskNA = !g.maxdisk;
+  const diskMeters = isVM
+    ? ((g.filesystems||[]).map(f => meter('DISK '+esc(f.mountpoint), f.disk/f.maxdisk*100,
+        fmtG(f.disk)+' / '+fmtG(f.maxdisk), ' '+unit(f.maxdisk), false)).join('')
+       || meter('DISK', 0, '', ' · '+esc(g.disk_status||'agent unavailable'), true))
+    : meter('DISK', dsk, diskNA?'':fmtG(g.disk)+' / '+fmtG(g.maxdisk), diskNA?'':' '+unit(g.maxdisk), diskNA);
   return '<div class="card'+(on?'':' stopped')+'">'
     + '<span class="dot '+(on?'up':'down')+'"></span>'
     + '<div class="crow"><span class="badge '+(isVM?'vm':'ct')+'">'+(isVM?'VM':'CT')+'</span>'
@@ -460,7 +547,7 @@ function guestCard(g){
     + (on ? (
         meter('CPU', cpu, cpu.toFixed(cpu<10?1:0)+'%', ' · '+g.maxcpu+'c', false)
       + meter('RAM', mem, fmtG(g.mem)+' / '+fmtG(g.maxmem), ' '+unit(g.maxmem), false)
-      + meter('DISK', dsk, diskNA?'':fmtG(g.disk)+' / '+fmtG(g.maxdisk), diskNA?'':' '+unit(g.maxdisk), diskNA)
+      + diskMeters
       + '<div class="mfoot"><span>up '+up(g.uptime)+'</span><span>'+(isVM?'KVM':'LXC')+'</span></div>'
       ) : '<div class="mfoot stop">stopped</div>')
     + '</div>';
