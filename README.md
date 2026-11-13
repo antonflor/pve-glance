@@ -19,7 +19,7 @@ python3 pve-glance.py        # then open http://<node-ip>:8008
 Three built-in themes — switch from the header buttons; the choice is remembered per
 browser. Each guest card has CPU / RAM / disk meters colored **green < 70%**,
 **amber 70–90%**, **red ≥ 90%**, with the number always shown so color is never the only
-signal. VMs show disk as `n/a` (see [notes](#notes)).
+signal. KVM VMs report filesystem usage through the QEMU Guest Agent (see [notes](#notes)).
 
 **Dark** (default)
 
@@ -115,8 +115,8 @@ read-only token. The box it runs on doesn't need to be a Proxmox node at all.
    python3 pve-glance.py
    ```
 
-`PVEAuditor` is Proxmox's built-in **read-only** role, so the token can look but never
-touch. TLS verification is off by default (PVE ships a self-signed cert); set
+`PVEAuditor` is Proxmox's built-in **read-only** monitoring role.
+VM filesystem collection also needs the guest-agent permission described in [notes](#notes). TLS verification is off by default (PVE ships a self-signed cert); set
 `PVE_GLANCE_API_VERIFY=1` if your node has a real certificate.
 
 ### Multiple clusters
@@ -165,16 +165,34 @@ browser ──/──────────▶ pve-glance.py ──▶ local: 
 The page polls `/api/resources` every 10 seconds. In **local mode** the server shells out
 to `pvesh`; in **remote mode** it fetches the same `/cluster/resources` endpoint over HTTP
 with your token. Either way it reshapes the result into `{clusters: [{nodes, guests}]}` and
-caches it briefly so many open tabs don't multiply the work. With multiple targets, every
+caches it briefly so many open tabs don't multiply the work. Running KVM guests
+are also queried for filesystem usage via `agent/get-fsinfo` (cached 30 seconds). With multiple targets, every
 cluster is fetched in parallel and collected independently, so one down cluster never
 blocks or breaks the others.
 
 ## Notes
 
-- **VM disk shows `n/a`.** Proxmox can't see inside a KVM guest's filesystem, so it
-  reports disk usage as 0 for VMs. pve-glance shows a hatched `n/a` track rather than a
-  misleading 0%. LXC container disk figures are real. (For true in-VM disk usage you'd
-  need a guest agent + a metrics stack like Prometheus node_exporter.)
+- **VM disk reporting is automatic.** Every running KVM VM is queried through
+  Proxmox's `agent/get-fsinfo` endpoint. Install and run `qemu-guest-agent` inside
+  each VM and enable **Options → QEMU Guest Agent** in Proxmox. A newly enabled
+  agent channel may need a full VM stop/start; schedule that yourself if needed.
+  Check readiness on the host with `qm agent <VMID> get-fsinfo`.
+- Each local filesystem with valid usage counters gets its own disk meter,
+  including Linux `/` and Windows `C:\`. Memory, optical, overlay and network
+  filesystems are excluded. An empty filesystem correctly shows zero usage.
+  The API includes `filesystems` and `disk_status`; VM `disk`/`maxdisk` refer to
+  the root/Windows system filesystem when available, otherwise the first mount.
+- Agent results (including failures) are cached for 30 seconds, with four
+  concurrent queries per cluster and a five-second timeout per query. Missing
+  agents, timeouts, permission failures and missing counters show an explicit
+  `n/a` status while CPU, RAM and other guests continue reporting.
+- **Remote agent permissions:** current Proxmox requires `VM.GuestAgent.Audit`
+  on the monitored VMs in addition to the cluster monitoring permissions.
+  Older PVE versions may require `VM.Monitor` (a broader privilege); inspect
+  your version's API permissions before granting it. A `PVEAuditor` token alone
+  may show `permission denied` for disk meters. Use a narrowly scoped custom
+  role for the required agent permission; do not give the token administrator
+  access. With separated token privileges, both user and token need permission.
 - **Only VMs and LXCs are shown** — storage and SDN resources are filtered out.
 
 ## Author
